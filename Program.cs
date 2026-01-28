@@ -101,6 +101,7 @@ class Program
                             endpoints.MapPost("/api/User/CallBack", HandleCallbackAsync);
                             endpoints.MapPost("/api/CallBack", HandleCallbackAsync);
                             endpoints.MapGet("/api/Test", HandleHealthCheck);
+                            endpoints.MapGet("/api/AddWebhookNotification", HandleAddWebhookNotification);
                             endpoints.MapGet("/api/RemoveBN", RemoveBN);
                         });
 
@@ -233,7 +234,6 @@ class Program
     // 健康检查接口
     private static async Task HandleHealthCheck(HttpContext context)
     {
-        await ConfigureWebhookNotification();
         // 明确设置内容类型为text/plain并指定UTF-8编码
         context.Response.ContentType = "text/plain; charset=utf-8";
         // 确保使用UTF-8编码写入响应内容
@@ -241,6 +241,16 @@ class Program
         await context.Response.WriteAsync("回调服务运行正常");
     }
 
+    // 给Bucket添加通知事件
+    private static async Task HandleAddWebhookNotification(HttpContext context)
+    {
+        await ConfigureWebhookNotification();
+        // 明确设置内容类型为text/plain并指定UTF-8编码
+        context.Response.ContentType = "text/plain; charset=utf-8";
+        // 确保使用UTF-8编码写入响应内容
+        Console.WriteLine("添加通知事件成功!!\n");
+        await context.Response.WriteAsync("添加通知事件成功");
+    }
 
     /// <summary>
     /// 配置Webhook事件通知
@@ -276,12 +286,10 @@ class Program
 
             // 应用到指定桶（注意替换为实际桶名）
             await _client.SetBucketNotificationsAsync("test", bucketNotification);
-
-            Console.WriteLine($"test 添加事件通知成功 \n");
+            Console.WriteLine($"配置Webhook事件通知成功 \n");
         }
         catch (Exception ex)
         {
-            Console.WriteLine("所有ARN格式都失败了");
             Console.WriteLine($" 配置Webhook事件通知  异常：{ex.Message}!!\n");
         }
 
