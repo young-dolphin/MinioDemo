@@ -1,81 +1,64 @@
 ﻿
 using Minio;
-using Microsoft.AspNetCore.Hosting.WindowsServices;
 using Microsoft.AspNetCore.Builder;
 using Minio.Exceptions;
-using Minio.DataModel;
-using System.Net.Mime;
-using System.Security.AccessControl;
 using System.IO;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
 using Microsoft.AspNetCore.Hosting;
 using minIODemo;
-using Microsoft.AspNetCore.Razor.TagHelpers;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
 using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Net.Http;
-using System.Threading;
 using System.Threading.Tasks;
-using Minio;
-using Minio.Exceptions;
-using System.Reactive;
-using System.Text;
 using System.Reactive.Linq;
+using System.Net;
+using Minio.DataModel.Args;
+using Minio.DataModel.Notification;
+using Models.SystemModel;
+using Common;
 class Program
 {
-    static MinioClient _client = null;
     static string CallBackApi = "";
     static string FilePath = "";
     static string Endpoint = "";
-
+    static MinioSettings minioSettings = new MinioSettings();
+    static IMinioClient _client = null;
     static async Task Main(string[] args)
     {
-
         Console.WriteLine("启动回调服务...");
 
         try
         {
             var configuration = new ConfigurationBuilder()
                .SetBasePath(Directory.GetCurrentDirectory()) // 设置配置文件所在目录（默认是程序运行目录）
-               .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true) // 加载appsettings.json
+               .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
                .Build();
-            var minioSettings = new MinioSettings();
+            //var minioSettings = new MinioSettings();
             configuration.GetSection("MinioSettings").Bind(minioSettings);
             CallBackApi = minioSettings.CallBackApi;
             FilePath = minioSettings.FilePath;
             Console.WriteLine($"Minio同步数据路径：{FilePath}\n");
-            Console.WriteLine($"测试接口：{CallBackApi}/api/Test\n");
+            Console.WriteLine($"监测接口是否正常：{CallBackApi}/api/Test\n");
             Console.WriteLine($"回调接口：{CallBackApi}/api/CallBack\n");
             Console.WriteLine("Minio配置信息：加载成功");
 
-            //下面是8.0的
-            //_client = new MinioClient()
-            //            .WithEndpoint(minioSettings.Endpoint)
-            //            .WithCredentials(minioSettings.AccessKey, minioSettings.SecretKey)
-            //            //.WithSSL()
-            //            .Build();
-            Endpoint = minioSettings.Endpoint;
-            _client = new MinioClient(
-                     endpoint: minioSettings.Endpoint,
-                     accessKey: minioSettings.AccessKey,
-                     secretKey: minioSettings.SecretKey
-                 );
-
-
+            #region MinIo 7.0版本
+            _client = new MinioClient()
+                     .WithEndpoint(minioSettings.Endpoint)
+                     .WithCredentials(minioSettings.AccessKey, minioSettings.SecretKey)
+                     .Build();
+            #endregion
             // 创建并启动Web主机
             var host = CreateHostBuilder(args).Build();
             await host.RunAsync();
+
         }
         catch (Exception ex)
         {
             LogHelper.Error($"有问题1：{ex.Message}");
         }
-
 
     }
 
@@ -98,11 +81,10 @@ class Program
                         app.UseEndpoints(endpoints =>
                         {
                             // 注册回调接口
-                            endpoints.MapPost("/api/User/CallBack", HandleCallbackAsync);
                             endpoints.MapPost("/api/CallBack", HandleCallbackAsync);
                             endpoints.MapGet("/api/Test", HandleHealthCheck);
                             endpoints.MapGet("/api/AddWebhookNotification", HandleAddWebhookNotification);
-                            endpoints.MapGet("/api/RemoveBN", RemoveBN);
+                            endpoints.MapGet("/api/RemoveWebhookNotification", HandleRemoveWebhookNotification);
                         });
 
                         // 处理404
@@ -124,18 +106,15 @@ class Program
 
             });
     }
+
+
+
     private static async Task HandleCallbackAsync(HttpContext context)
     {
-        // 1. 从请求中读取并解析数据为 MinioCallback
         var json = await new StreamReader(context.Request.Body).ReadToEndAsync();
-        var callbackData = System.Text.Json.JsonSerializer.Deserialize<MinioCallback>(json);
-
-
-
-        // 2. 调用你的业务逻辑处理方法
+        var callbackData = JSONHelper.json_to_model<MinioCallback>(json);
         string result = await ProcessCallbackDataAsync(callbackData);
 
-        // 3. 设置响应
         context.Response.ContentType = "application/json";
         await context.Response.WriteAsync(result);
     }
@@ -144,8 +123,28 @@ class Program
     private static async Task<string> ProcessCallbackDataAsync(MinioCallback callbackData)
     {
 
+        string EventName = callbackData.EventName;
+        string key = WebUtility.UrlDecode(callbackData.Records[0].s3.@object.key);
+        string eventTime = callbackData.Records.First().eventTime;
+        string bucket = callbackData.Records.First().s3.bucket.name;
+        long size = callbackData.Records.First().s3.@object.size;
+        string eTag = callbackData.Records.First().s3.@object.eTag;
+        string contentType = callbackData.Records.First().s3.@object.contentType;
+        string sequencer = callbackData.Records.First().s3.@object.sequencer;
 
 
+
+        //这里直接发送到MQ，然后返回信息
+        
+        return "成功";
+    }
+
+    
+
+    private static async void GetMinioFileByKey()
+    {
+
+        MinioCallback callbackData = new MinioCallback();
         //存储桶
         string _bucketName = callbackData.Records.First().s3.bucket.name;
 
@@ -154,31 +153,31 @@ class Program
 
         string _file_name = callbackData.Key.Split("/").Last();
 
-        string _curr_path = (callbackData.Key.Substring(0, callbackData.Key.LastIndexOf('/') + 1)).Replace("/", "\\");
+        string _curr_path = callbackData.Key.Substring(0, callbackData.Key.LastIndexOf('/') + 1).Replace("/", "\\");
+
+        var str = callbackData.Records[0].s3.@object.key;
+        //object里的中文会乱码，进行解码就可以了
+        var zifuchuan = WebUtility.UrlDecode(str);
 
         LogHelper.Info($"回调成功：{_curr_path}\\{_file_name}");
         if (!callbackData.EventName.Contains("Delete"))
         {
-            var memoryStream = new MemoryStream();
-            //GetObjectArgs getObjectArgs = new GetObjectArgs()
-            //                                  .WithBucket(_bucketName)
-            //                                  .WithObject(_object_path_name)
-            //                                  .WithCallbackStream((stream) =>
-            //                                  {
-            //                                      stream.CopyTo(memoryStream);
-            //                                  });
-            //await _client.GetObjectAsync(getObjectArgs);
+            //Directory.Exists()
 
-            // v3.x 中使用 GetObjectArgs 的方式不同，通过构造函数或属性设置参数
             try
             {
+                Console.WriteLine("Running example for API: GetObjectAsync");
+                //File.Delete(_file_name);
+                var args = new GetObjectArgs()
+                    .WithBucket(_bucketName)
+                    .WithObject(_object_path_name)
+                    .WithFile("D:\\YANGDAFENG\\");
+                //.WithServerSideEncryption(sse);
+                _ = await _client.GetObjectAsync(args).ConfigureAwait(false);
 
-
-                // 回调流处理：v3.x 中使用 Stream 直接读取
-                await _client.GetObjectAsync(_bucketName, _object_path_name, (stream) =>
-                {
-                    stream.CopyTo(memoryStream);
-                });
+                Console.WriteLine($"Downloaded the file {_file_name} from bucket {_bucketName}");
+                Console.WriteLine();
+                //
             }
             catch (Minio.Exceptions.ObjectNotFoundException)
             {
@@ -206,18 +205,6 @@ class Program
                 LogHelper.Error($"获取对象时发生错误：{ex.Message}");
             }
 
-
-            DirectoryInfo directoryInfo = new DirectoryInfo(@$"{FilePath}\{_curr_path}");
-            if (!directoryInfo.Exists)
-            {
-                directoryInfo.Create();
-            }
-
-            string pathsss = @$"{FilePath}\{_curr_path}\{_file_name}";
-
-            using FileStream targetFileStream = new FileStream(pathsss, FileMode.Create);
-
-            memoryStream.WriteTo(targetFileStream);
             LogHelper.Info($"数据同步成功：{_curr_path}\\{_file_name}");
             Console.WriteLine($"数据同步成功：{_curr_path}\\{_file_name}");
         }
@@ -228,8 +215,11 @@ class Program
             LogHelper.Info($"删除成功：{_curr_path}\\{_file_name}");
         }
 
-        return "成功";
     }
+
+
+
+
 
     // 健康检查接口
     private static async Task HandleHealthCheck(HttpContext context)
@@ -252,51 +242,48 @@ class Program
         await context.Response.WriteAsync("添加通知事件成功");
     }
 
+
+
     /// <summary>
     /// 配置Webhook事件通知
     /// </summary>
+    /// <returns></returns>
+    /// <exception cref="ArgumentNullException"></exception>
     private static async Task ConfigureWebhookNotification()
     {
         try
         {
-            //// 检查当前的通知配置
-            //var currentConfig = await _client.GetBucketNotificationsAsync("yangdafengceshi");
-            //_client.RemoveAllBucketNotificationsAsync("yyyy");
-            //Console.WriteLine($"当前配置: {currentConfig.ToXML()}");
+            Console.WriteLine("Running example for API: SetBucketNotificationAsync");
+            var notification = new BucketNotification();
+            var args = new SetBucketNotificationsArgs()
+                .WithBucket("test")
+                .WithBucketNotificationConfiguration(notification);
 
-            // 定义要监听的事件（例如：对象创建、删除）
-            var events = new List<EventType>
-            {
-                EventType.ObjectCreatedAll,  // 所有对象创建事件
-                EventType.ObjectRemovedAll   // 所有对象删除事件
-            };
+            // Uncomment the code below and change Arn and event types to configure.
 
-            // 创建Webhook通知配置（修正ARN格式）
+            QueueConfig queueConfiguration = new QueueConfig("arn:minio:sqs::yanga:webhook");
+            queueConfiguration.AddEvents(new List<EventType>() { EventType.BucketCreatedAll, EventType.ObjectRemovedDelete, EventType.ObjectCreatedPut });
+            notification.AddQueue(queueConfiguration);
 
-            var queueConfig = new QueueConfig("arn:minio:sqs::yanga:webhook");
+            await _client.SetBucketNotificationsAsync(args).ConfigureAwait(false);
 
-            //var queueConfig = new QueueConfig("arn:minio:sqs::1:webhook");
-            //queueConfig.Queue = $"{CallBackApi}/api/CallBack";
-
-            queueConfig.AddEvents(events);
-
-            // 配置桶通知
-            var bucketNotification = new BucketNotification();
-            bucketNotification.AddQueue(queueConfig);
-
-            // 应用到指定桶（注意替换为实际桶名）
-            await _client.SetBucketNotificationsAsync("test", bucketNotification);
-            Console.WriteLine($"配置Webhook事件通知成功 \n");
+            Console.WriteLine("Notifications set for the bucket {bucketName} were set successfully");
+            Console.WriteLine();
         }
-        catch (Exception ex)
+        catch (Exception e)
         {
-            Console.WriteLine($" 配置Webhook事件通知  异常：{ex.Message}!!\n");
+            Console.WriteLine($"[Bucket]  Exception: {e}");
         }
-
     }
-    private static async Task RemoveBN(HttpContext context)
+
+    private static async Task HandleRemoveWebhookNotification(HttpContext context)
     {
-        await _client.RemoveAllBucketNotificationsAsync("test");
+        Console.WriteLine("Running example for API: RemoveAllBucketNotificationAsync");
+
+        var args = new RemoveAllBucketNotificationsArgs()
+            .WithBucket("移除哪个Buket?");
+        await _client.RemoveAllBucketNotificationsAsync(args).ConfigureAwait(false);
+
         Console.WriteLine($"test 事件移除成功");
     }
 
