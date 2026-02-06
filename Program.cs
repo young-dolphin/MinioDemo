@@ -18,6 +18,9 @@ using Minio.DataModel.Args;
 using Minio.DataModel.Notification;
 using Models.SystemModel;
 using Common;
+using SqlSugar.Extensions;
+using SqlSugar;
+
 class Program
 {
     static string CallBackApi = "";
@@ -28,7 +31,7 @@ class Program
     static async Task Main(string[] args)
     {
         Console.WriteLine("启动回调服务...");
-
+        SnowFlakeSingle.WorkId = 2;
         try
         {
             var configuration = new ConfigurationBuilder()
@@ -53,6 +56,9 @@ class Program
             // 创建并启动Web主机
             var host = CreateHostBuilder(args).Build();
             await host.RunAsync();
+
+
+
 
         }
         catch (Exception ex)
@@ -108,38 +114,53 @@ class Program
     }
 
 
-
     private static async Task HandleCallbackAsync(HttpContext context)
     {
         var json = await new StreamReader(context.Request.Body).ReadToEndAsync();
         var callbackData = JSONHelper.json_to_model<MinioCallback>(json);
-        string result = await ProcessCallbackDataAsync(callbackData);
+        var result = ProcessCallbackDataAsync(callbackData);
 
         context.Response.ContentType = "application/json";
+        context.Response.StatusCode = 200;
         await context.Response.WriteAsync(result);
     }
 
     // 处理回调请求
-    private static async Task<string> ProcessCallbackDataAsync(MinioCallback callbackData)
+    private static string ProcessCallbackDataAsync(MinioCallback callbackData)
     {
+        try
+        {
+            string EventName = callbackData.EventName;
+            string key = WebUtility.UrlDecode(callbackData.Records[0].s3.@object.key);
+            string eventTime = callbackData.Records.First().eventTime;
+            string bucket_name = callbackData.Records.First().s3.bucket.name;
+            long size = callbackData.Records.First().s3.@object.size;
+            string eTag = callbackData.Records.First().s3.@object.eTag;
+            string contentType = callbackData.Records.First().s3.@object.contentType;
+            string sequencer = callbackData.Records.First().s3.@object.sequencer;
 
-        string EventName = callbackData.EventName;
-        string key = WebUtility.UrlDecode(callbackData.Records[0].s3.@object.key);
-        string eventTime = callbackData.Records.First().eventTime;
-        string bucket = callbackData.Records.First().s3.bucket.name;
-        long size = callbackData.Records.First().s3.@object.size;
-        string eTag = callbackData.Records.First().s3.@object.eTag;
-        string contentType = callbackData.Records.First().s3.@object.contentType;
-        string sequencer = callbackData.Records.First().s3.@object.sequencer;
+            var message = new sys_base_minio
+            {
+                EventName = EventName,
+                Key = key,
+                EventTime = eventTime.ObjToDate(),
+                Bucket_name = bucket_name,
+                Size = size,
+                Etag = eTag,
+                ContentType = contentType,
+                Sequencer = sequencer
+            };
 
-
-
-        //这里直接发送到MQ，然后返回信息
-        
-        return "成功";
+            SqlSugarHelper.Db.Insertable(message).ExecuteReturnSnowflakeId();
+            Console.WriteLine("接收成功");
+            return "接收成功";
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"接收失败，{ex.Message}");
+            return $"接收失败，{ex.Message}";
+        }
     }
-
-    
 
     private static async void GetMinioFileByKey()
     {
@@ -171,7 +192,7 @@ class Program
                 var args = new GetObjectArgs()
                     .WithBucket(_bucketName)
                     .WithObject(_object_path_name)
-                    .WithFile("D:\\YANGDAFENG\\");
+                    .WithFile(FilePath);
                 //.WithServerSideEncryption(sse);
                 _ = await _client.GetObjectAsync(args).ConfigureAwait(false);
 
